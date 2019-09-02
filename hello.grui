@@ -1,0 +1,7 @@
+vertical {
+    button {
+        label "I'm from a config file";
+    }
+
+    label "hello again";
+}
