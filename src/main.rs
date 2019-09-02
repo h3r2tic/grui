@@ -1,4 +1,6 @@
 #![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 
 #[macro_use]
 extern crate lalrpop_util;
@@ -11,33 +13,47 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use glutin::GlContext;
-use nanovg::{Direction, Alignment, Color, Font, Frame, Gradient, ImagePattern,
-             LineCap, LineJoin, PathOptions, Scissor, Solidity, StrokeOptions,
-             TextOptions, Transform, Winding, Image, Context, Clip, Intersect};
+use nanovg::{
+    Alignment, Clip, Color, Context, Direction, Font, Frame, Gradient, Image, ImagePattern,
+    Intersect, LineCap, LineJoin, PathOptions, Scissor, Solidity, StrokeOptions, TextOptions,
+    Transform, Winding,
+};
+use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::time::Instant;
 
+use glam::{vec2, Vec2};
+
 const INIT_WINDOW_SIZE: (u32, u32) = (300, 300);
 
-trait Widget {}
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct WidgetId(usize);
 
-struct Button;
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct WidgetUid(Vec<WidgetId>);
 
-impl Button {
-    fn new() -> Self {
-        unimplemented!();
-    }
-
-    fn with_label(self, _label: &str) -> Self {
-        self
-    }
+#[derive(Debug)]
+enum Widget {
+    Button(String),
+    Label(String),
+    Horizontal(Vec<(WidgetId, Widget)>),
+    Vertical(Vec<(WidgetId, Widget)>),
 }
 
-impl Widget for Button {}
-
-struct UiContext;
+#[derive(Debug)]
+struct UiContext {
+    appended_items: Vec<(WidgetId, Widget)>,
+    next_widget_id: WidgetId,
+}
 
 impl UiContext {
+    fn new() -> Self {
+        Self {
+            appended_items: Vec::new(),
+            next_widget_id: WidgetId(0),
+        }
+    }
+
     fn clicked(&self) -> bool {
         unimplemented!();
     }
@@ -46,22 +62,24 @@ impl UiContext {
         unimplemented!();
     }
 
-    fn append(&self, _widget: impl Widget) {
-        unimplemented!();
+    fn append(&mut self, widget: Widget) {
+        let id = self.next_widget_id;
+        self.next_widget_id.0 += 1;
+        self.appended_items.push((id, widget))
     }
 }
 
 #[allow(dead_code)]
-fn do_ui_stuff(ui: UiContext) {
-    ui.append(Button::new().with_label("Why helo thar"));
+fn do_ui_stuff(ui: &mut UiContext) {
+    ui.append(Widget::Button("Why helo thar".to_owned()));
 
     if ui.id("herpderp").clicked() {
         ui.id("herpderp")
-            .append(Button::new().with_label("Inline button lulz"));
+            .append(Widget::Button("Inline button lulz".to_owned()));
     }
 }
 
-fn do_parse_ui_stuff() -> Vec<Box<ast::Decl>> {
+fn do_parse_ui_stuff() -> Vec<ast::Item> {
     let mut f = File::open("hello.grui").expect("file not found");
 
     let mut contents = String::new();
@@ -79,8 +97,150 @@ fn do_parse_ui_stuff() -> Vec<Box<ast::Decl>> {
     ast
 }
 
+fn emit_gui_item(ui: &mut UiContext, item: &ast::Item) {
+    match item.ident.as_str() {
+        "label" => {
+            if let ast::Value::String(ref value) = item.value {
+                ui.append(Widget::Label(value.to_owned()));
+            }
+        }
+        "horizontal" => {
+            if let ast::Value::List(ref items) = item.value {
+                let mut sub_ctx = UiContext::new();
+                emit_gui_items(&mut sub_ctx, items);
+                ui.append(Widget::Horizontal(sub_ctx.appended_items));
+            }
+        }
+        "vertical" => {
+            if let ast::Value::List(ref items) = item.value {
+                let mut sub_ctx = UiContext::new();
+                emit_gui_items(&mut sub_ctx, items);
+                ui.append(Widget::Vertical(sub_ctx.appended_items));
+            }
+        }
+        "button" => {
+            if let ast::Value::String(ref value) = item.value {
+                ui.append(Widget::Button(value.to_owned()));
+            }
+        }
+        _ => {
+            unimplemented!();
+        }
+    }
+}
+
+fn emit_gui_items(ui: &mut UiContext, ast: &[ast::Item]) {
+    for item in ast {
+        emit_gui_item(ui, item);
+    }
+}
+
+#[derive(Debug)]
+struct LayoutTree {
+    extent: Vec2,
+    offset: Vec2,
+    children: Vec<LayoutTree>,
+}
+
+impl LayoutTree {
+    fn rect(w: f32, h: f32) -> Self {
+        Self {
+            extent: vec2(w, h),
+            offset: vec2(0.0, 0.0),
+            children: Default::default(),
+        }
+    }
+}
+
+fn calculate_vertical_layout(items: &[(WidgetId, Widget)]) -> LayoutTree {
+    let mut node = LayoutTree::rect(0.0, 0.0);
+    let mut x = 0f32;
+    let mut y = 0f32;
+    for item in items {
+        let mut ch = calculate_widget_layout(&item.1);
+        ch.offset = vec2(0.0, y);
+        y += ch.extent.y();
+        x = x.max(ch.extent.x());
+        node.extent = vec2(x, y);
+        node.children.push(ch);
+    }
+    node
+}
+
+fn calculate_widget_layout(widget: &Widget) -> LayoutTree {
+    match widget {
+        Widget::Button(s) => LayoutTree::rect(180.0, 25.0),
+        Widget::Label(s) => LayoutTree::rect(180.0, 25.0),
+        Widget::Horizontal(ref items) => {
+            let mut node = LayoutTree::rect(0.0, 0.0);
+            let mut x = 0f32;
+            let mut y = 0f32;
+            for item in items {
+                let mut ch = calculate_widget_layout(&item.1);
+                ch.offset = vec2(x, 0.0);
+                x += ch.extent.x();
+                y = y.max(ch.extent.y());
+                node.extent = vec2(x, y);
+                node.children.push(ch);
+            }
+            node
+        }
+        Widget::Vertical(ref items) => calculate_vertical_layout(items),
+    }
+}
+
+fn calculate_ui_layout(ui: &UiContext) -> LayoutTree {
+    calculate_vertical_layout(&ui.appended_items)
+}
+
+fn flatten_widget<'a>(widget: &'a Widget) -> Vec<&'a Widget> {
+    let mut result = Vec::new();
+
+    result.push(widget);
+
+    match widget {
+        Widget::Horizontal(ref items) | Widget::Vertical(ref items) => {
+            for item in items {
+                result.append(&mut flatten_widget(&item.1));
+            }
+        }
+        _ => (),
+    }
+    result
+}
+
+fn flatten_widgets<'a>(ui: &'a UiContext) -> Vec<&'a Widget> {
+    let mut result = Vec::new();
+    for item in &ui.appended_items {
+        result.append(&mut flatten_widget(&item.1));
+    }
+    result
+}
+
+#[derive(Debug)]
+struct FlattenedLayout {
+    offset: Vec2,
+    extent: Vec2,
+}
+
+fn flatten_layout<'a>(base_offset: Vec2, node: &'a LayoutTree) -> Vec<FlattenedLayout> {
+    let mut result = Vec::new();
+    let offset = base_offset + node.offset;
+
+    result.push(FlattenedLayout {
+        offset,
+        extent: node.extent,
+    });
+
+    for item in &node.children {
+        result.append(&mut flatten_layout(offset, &item));
+    }
+
+    result
+}
+
 fn main() {
-    do_parse_ui_stuff();
+    let gui_ast = do_parse_ui_stuff();
 
     let mut events_loop = glutin::EventsLoop::new();
     let window = glutin::WindowBuilder::new()
@@ -138,14 +298,43 @@ fn main() {
 
         let (width, height) = (width as f32, height as f32);
         context.frame((width, height), gl_window.hidpi_factor(), |frame| {
-            let mut x = 50.0;
-            let mut y = 50.0;
+            let mut ui_ctx = UiContext::new();
+            emit_gui_items(&mut ui_ctx, &gui_ast);
 
-            draw_label(&frame, &fonts, "Login", x, y, 280.0, 20.0);
-            y += 25.0;
-            draw_label(&frame, &fonts, "Password", x, y, 280.0, 20.0);
-            x += 80.0;
-            draw_button(&frame, &fonts, "Sign in", x, y, 140.0, 28.0, Color::from_rgba(0, 96, 128, 255));
+            //dbg!(&ui_ctx);
+
+            let ui_layout = calculate_ui_layout(&ui_ctx);
+
+            //dbg!(&ui_layout);
+
+            let flat_widgets = flatten_widgets(&ui_ctx);
+            let flat_layout = flatten_layout(vec2(0.0, 0.0), &ui_layout);
+            let flat_layout = flat_layout.iter().skip(1); // skip the root vertical layout node
+
+            for (widget, layout) in flat_widgets.iter().zip(flat_layout) {
+                match widget {
+                    Widget::Label(s) => draw_label(
+                        &frame,
+                        &fonts,
+                        s,
+                        layout.offset.x(),
+                        layout.offset.y(),
+                        layout.extent.x(),
+                        20.0,
+                    ),
+                    Widget::Button(s) => draw_button(
+                        &frame,
+                        &fonts,
+                        s,
+                        layout.offset.x(),
+                        layout.offset.y(),
+                        layout.extent.x(),
+                        28.0,
+                        Color::from_rgba(0, 96, 128, 255),
+                    ),
+                    _ => (),
+                }
+            }
         });
 
         gl_window.swap_buffers().unwrap();
@@ -174,7 +363,16 @@ fn is_black(color: Color) -> bool {
     color.red() == 0.0 && color.green() == 0.0 && color.blue() == 0.0 && color.alpha() == 0.0
 }
 
-fn draw_button(frame: &Frame, fonts: &DemoFonts, text: &str, x: f32, y: f32, w: f32, h: f32, color: Color) {
+fn draw_button(
+    frame: &Frame,
+    fonts: &DemoFonts,
+    text: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: Color,
+) {
     let corner_radius = 4.0;
     let color_is_black = is_black(color);
 
@@ -190,10 +388,15 @@ fn draw_button(frame: &Frame, fonts: &DemoFonts, text: &str, x: f32, y: f32, w: 
                 Gradient::Linear {
                     start: (x, y),
                     end: (x, y + h),
-                    start_color: Color::from_rgba(255, 255, 255, if color_is_black { 16 } else { 32 }),
+                    start_color: Color::from_rgba(
+                        255,
+                        255,
+                        255,
+                        if color_is_black { 16 } else { 32 },
+                    ),
                     end_color: Color::from_rgba(0, 0, 0, if color_is_black { 16 } else { 32 }),
                 },
-                Default::default()
+                Default::default(),
             );
         },
         Default::default(),
@@ -218,8 +421,6 @@ fn draw_button(frame: &Frame, fonts: &DemoFonts, text: &str, x: f32, y: f32, w: 
         },
     );
 
-    let mut iw = 0.0;
-
     let mut options = TextOptions {
         size: 20.0,
         align: Alignment::new().left().middle(),
@@ -230,7 +431,7 @@ fn draw_button(frame: &Frame, fonts: &DemoFonts, text: &str, x: f32, y: f32, w: 
 
     frame.text(
         fonts.sans,
-        (x + w * 0.5 - tw * 0.5 + iw * 0.25, y + h * 0.5 - 1.0),
+        (x + w * 0.5 - tw * 0.5, y + h * 0.5 - 1.0),
         text,
         options,
     );
@@ -239,7 +440,7 @@ fn draw_button(frame: &Frame, fonts: &DemoFonts, text: &str, x: f32, y: f32, w: 
 
     frame.text(
         fonts.sans,
-        (x + w * 0.5 - tw * 0.5 + iw * 0.25, y + h * 0.5),
+        (x + w * 0.5 - tw * 0.5, y + h * 0.5),
         text,
         options,
     );

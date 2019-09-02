@@ -12,6 +12,7 @@ glutin = "0.13.0"
 gl = "0.13"
 lalrpop-util = "0.17.2"
 regex = "0.2.1"
+glam = "0.7.1"
 
 [build-dependencies]
 lalrpop = "0.17.2"

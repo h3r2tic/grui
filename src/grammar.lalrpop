@@ -1,40 +1,31 @@
 use std::str::FromStr;
-use crate::ast::{Decl, Ident, Value};
+use crate::ast::{Item, Value};
 
 grammar;
 
-pub Main: Vec<Box<Decl>> = {
-	<Decl+>
+pub Main: Vec<Item> = {
+	<ItemDecl+>
 }
 
-Tier<Op,NextTier>: Box<Expr> = {
-    Tier<Op,NextTier> Op NextTier => Box::new(Expr::Op(<>)),
-    NextTier
-};
-
-pub Decl = {
-	ItemDecl,
+pub ItemDecl: Item = {
+    <ident:Ident> <value:Value> ";" => Item { ident, value: value },
+	<ident:Ident> "{" <value:Main> "}" => Item { ident, value: Value::List(value) },
 }
 
-pub ItemDecl: Box<Decl> = {
-	<Ident> "{" <Main> "}" => Box::new(Decl::BlockItem(<>)),
-    <Ident> <Value> ";" => Box::new(Decl::SimpleItem(<>)),
-}
-
-Value: Box<Value> = {
-    Num => Box::new(Value::Int(<>)),
-	Ident => Box::new(Value::Ident(<>)),
-    String => Box::new(Value::String(<>)),
+Value: Value = {
+    Num => Value::Int(<>),
+	Ident => Value::Ident(<>),
+    String => Value::String(<>),
 }
 
 Num: i32 = {
     r"[0-9]+" => i32::from_str(<>).unwrap()
 }
 
-Ident: Ident = {
-	r"[a-zA-Z_][a-zA-Z_0-9]*" => Ident(<>.to_string())
+Ident: String = {
+	r"[a-zA-Z_][a-zA-Z_0-9]*" => <>.to_string()
 }
 
 String: String = {
-	r#""[^"]*""# => <>.to_string()
+	r#""[^"]*""# => String::from(&<>[1..<>.len()-1])
 }
