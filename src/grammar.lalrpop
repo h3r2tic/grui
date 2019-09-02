@@ -8,8 +8,8 @@ pub Main: Vec<Item> = {
 }
 
 pub ItemDecl: Item = {
-    <ident:Ident> <value:Value> ";" => Item { ident, value: value },
-	<ident:Ident> "{" <value:Main> "}" => Item { ident, value: Value::List(value) },
+    <uid:Uid?> <ident:Ident> <value:Value> ";" => Item { uid, ident, value: value },
+	<uid:Uid?> <ident:Ident> "{" <value:Main> "}" => Item { uid, ident, value: Value::List(value) },
 }
 
 Value: Value = {
@@ -20,6 +20,10 @@ Value: Value = {
 
 Num: i32 = {
     r"[0-9]+" => i32::from_str(<>).unwrap()
+}
+
+Uid: String = {
+    "#" <Ident> => <>
 }
 
 Ident: String = {

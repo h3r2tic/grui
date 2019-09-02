@@ -36,46 +36,91 @@ struct WidgetUid(Vec<WidgetId>);
 enum Widget {
     Button(String),
     Label(String),
-    Horizontal(Vec<(WidgetId, Widget)>),
-    Vertical(Vec<(WidgetId, Widget)>),
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Debug)]
-struct UiContext {
-    appended_items: Vec<(WidgetId, Widget)>,
-    next_widget_id: WidgetId,
+struct UiNode {
+    widget: Widget,
+    string_uid: Option<String>,
+    children: Vec<(WidgetId, UiNode)>,
+    next_child_id: WidgetId,
 }
 
-impl UiContext {
-    fn new() -> Self {
+impl From<Widget> for UiNode {
+    fn from(w: Widget) -> Self {
+        UiNode::new(w)
+    }
+}
+
+struct UiContext<'a, 'b> {
+    node: &'a mut UiNode,
+    interaction_state: &'b UiInteractionState,
+}
+
+impl UiNode {
+    fn new(widget: Widget) -> Self {
         Self {
-            appended_items: Vec::new(),
-            next_widget_id: WidgetId(0),
+            widget,
+            string_uid: None,
+            children: Vec::new(),
+            next_child_id: WidgetId(0),
+        }
+    }
+
+    fn id<'a>(&'a mut self, label: &str) -> Option<&'a mut UiNode> {
+        if let Some(ref s) = self.string_uid {
+            if s == label {
+                return Some(self);
+            }
+        }
+
+        for (_, ch) in self.children.iter_mut() {
+            if let Some(res) = ch.id(label) {
+                return Some(res);
+            }
+        }
+        None
+    }
+}
+
+impl<'a, 'b> UiContext<'a, 'b> {
+    fn new(node: &'a mut UiNode, interaction_state: &'b UiInteractionState) -> Self {
+        Self {
+            node,
+            interaction_state,
         }
     }
 
     fn clicked(&self) -> bool {
-        unimplemented!();
+        // TODO
+        false
     }
 
-    fn id(&self, _label: &str) -> UiContext {
-        unimplemented!();
+    fn id(&mut self, label: &str) -> Option<UiContext<'_, '_>> {
+        let interaction_state = self.interaction_state;
+        self.node
+            .id(label)
+            .map(|n| UiContext::new(n, interaction_state))
     }
 
-    fn append(&mut self, widget: Widget) {
-        let id = self.next_widget_id;
-        self.next_widget_id.0 += 1;
-        self.appended_items.push((id, widget))
+    fn append(&mut self, child: impl Into<UiNode>) {
+        let id = self.node.next_child_id;
+        self.node.next_child_id.0 += 1;
+        self.node.children.push((id, child.into()))
     }
 }
 
 #[allow(dead_code)]
-fn do_ui_stuff(ui: &mut UiContext) {
+fn do_ui_stuff(ui: &mut UiContext) -> Option<()> {
     ui.append(Widget::Button("I'm from code".to_owned()));
 
-    if ui.id("myspecialbutton").clicked() {
+    if ui.id("special_button")?.clicked() {
         // do stuff
     }
+
+    Some(())
 }
 
 fn do_parse_ui_stuff() -> Vec<ast::Item> {
@@ -91,40 +136,59 @@ fn do_parse_ui_stuff() -> Vec<ast::Item> {
 
     let ast = grammar::MainParser::new().parse(&contents).unwrap();
 
-    dbg!(&ast);
+    //dbg!(&ast);
 
     ast
 }
 
 fn emit_gui_item(ui: &mut UiContext, item: &ast::Item) {
-    match item.ident.as_str() {
+    let ctx = match item.ident.as_str() {
         "label" => {
             if let ast::Value::String(ref value) = item.value {
-                ui.append(Widget::Label(value.to_owned()));
+                Some(UiNode::new(Widget::Label(value.to_owned())))
+            } else {
+                None
             }
         }
         "horizontal" => {
             if let ast::Value::List(ref items) = item.value {
-                let mut sub_ctx = UiContext::new();
-                emit_gui_items(&mut sub_ctx, items);
-                ui.append(Widget::Horizontal(sub_ctx.appended_items));
+                let mut sub_ctx = UiNode::new(Widget::Horizontal);
+                emit_gui_items(
+                    &mut UiContext::new(&mut sub_ctx, ui.interaction_state),
+                    items,
+                );
+                Some(sub_ctx)
+            } else {
+                None
             }
         }
         "vertical" => {
             if let ast::Value::List(ref items) = item.value {
-                let mut sub_ctx = UiContext::new();
-                emit_gui_items(&mut sub_ctx, items);
-                ui.append(Widget::Vertical(sub_ctx.appended_items));
+                let mut sub_ctx = UiNode::new(Widget::Vertical);
+                emit_gui_items(
+                    &mut UiContext::new(&mut sub_ctx, ui.interaction_state),
+                    items,
+                );
+                Some(sub_ctx)
+            } else {
+                None
             }
         }
         "button" => {
             if let ast::Value::String(ref value) = item.value {
-                ui.append(Widget::Button(value.to_owned()));
+                Some(UiNode::new(Widget::Button(value.to_owned())))
+            } else {
+                None
             }
         }
         _ => {
             unimplemented!();
         }
+    };
+
+    if let Some(mut ctx) = ctx {
+        ctx.string_uid = item.uid.clone();
+        ui.append(ctx);
     }
 }
 
@@ -151,31 +215,16 @@ impl LayoutTree {
     }
 }
 
-fn calculate_vertical_layout(items: &[(WidgetId, Widget)]) -> LayoutTree {
-    let mut node = LayoutTree::rect(0.0, 0.0);
-    let mut x = 0f32;
-    let mut y = 0f32;
-    for item in items {
-        let mut ch = calculate_widget_layout(&item.1);
-        ch.offset = vec2(0.0, y);
-        y += ch.extent.y();
-        x = x.max(ch.extent.x());
-        node.extent = vec2(x, y);
-        node.children.push(ch);
-    }
-    node
-}
-
-fn calculate_widget_layout(widget: &Widget) -> LayoutTree {
-    match widget {
+fn calculate_ui_layout(ctx: &UiNode) -> LayoutTree {
+    match &ctx.widget {
         Widget::Button(s) => LayoutTree::rect(180.0, 25.0),
         Widget::Label(s) => LayoutTree::rect(180.0, 25.0),
-        Widget::Horizontal(ref items) => {
+        Widget::Horizontal => {
             let mut node = LayoutTree::rect(0.0, 0.0);
             let mut x = 0f32;
             let mut y = 0f32;
-            for item in items {
-                let mut ch = calculate_widget_layout(&item.1);
+            for item in &ctx.children {
+                let mut ch = calculate_ui_layout(&item.1);
                 ch.offset = vec2(x, 0.0);
                 x += ch.extent.x();
                 y = y.max(ch.extent.y());
@@ -184,23 +233,35 @@ fn calculate_widget_layout(widget: &Widget) -> LayoutTree {
             }
             node
         }
-        Widget::Vertical(ref items) => calculate_vertical_layout(items),
+        Widget::Vertical => {
+            let mut node = LayoutTree::rect(0.0, 0.0);
+            let mut x = 0f32;
+            let mut y = 0f32;
+            for item in &ctx.children {
+                let mut ch = calculate_ui_layout(&item.1);
+                ch.offset = vec2(0.0, y);
+                y += ch.extent.y();
+                x = x.max(ch.extent.x());
+                node.extent = vec2(x, y);
+                node.children.push(ch);
+            }
+            node
+        }
     }
 }
 
-fn calculate_ui_layout(ui: &UiContext) -> LayoutTree {
-    calculate_vertical_layout(&ui.appended_items)
-}
-
-fn flatten_widget<'a>(widget: &'a Widget) -> Vec<&'a Widget> {
+fn flatten_widgets_inner<'a>(ui: &'a UiNode, uid: &WidgetUid) -> Vec<(WidgetUid, &'a Widget)> {
     let mut result = Vec::new();
 
-    result.push(widget);
+    result.push((uid.clone(), &ui.widget));
 
-    match widget {
-        Widget::Horizontal(ref items) | Widget::Vertical(ref items) => {
-            for item in items {
-                result.append(&mut flatten_widget(&item.1));
+    match &ui.widget {
+        Widget::Horizontal | Widget::Vertical => {
+            for item in &ui.children {
+                let mut uid = uid.clone();
+                uid.0.push(item.0);
+
+                result.append(&mut flatten_widgets_inner(&item.1, &uid));
             }
         }
         _ => (),
@@ -208,12 +269,8 @@ fn flatten_widget<'a>(widget: &'a Widget) -> Vec<&'a Widget> {
     result
 }
 
-fn flatten_widgets<'a>(ui: &'a UiContext) -> Vec<&'a Widget> {
-    let mut result = Vec::new();
-    for item in &ui.appended_items {
-        result.append(&mut flatten_widget(&item.1));
-    }
-    result
+fn flatten_widgets<'a>(ui: &'a UiNode) -> Vec<(WidgetUid, &'a Widget)> {
+    flatten_widgets_inner(ui, &WidgetUid(Vec::new()))
 }
 
 #[derive(Debug)]
@@ -238,12 +295,17 @@ fn flatten_layout<'a>(base_offset: Vec2, node: &'a LayoutTree) -> Vec<FlattenedL
     result
 }
 
+#[derive(Default)]
+struct UiInteractionState {
+    hovered_widget: Option<WidgetUid>,
+}
+
 fn main() {
     let gui_ast = do_parse_ui_stuff();
 
     let mut events_loop = glutin::EventsLoop::new();
     let window = glutin::WindowBuilder::new()
-        .with_title("NanoVG Text")
+        .with_title("gui proto")
         .with_dimensions(INIT_WINDOW_SIZE.0, INIT_WINDOW_SIZE.1);
     let context = glutin::ContextBuilder::new()
         .with_vsync(false)
@@ -267,7 +329,10 @@ fn main() {
     };
 
     let mut running = true;
-    let mut mouse = (0.0f32, 0.0f32);
+    let mut mouse = vec2(0.0f32, 0.0f32);
+    let mut mouse_down = false;
+
+    let mut interaction_state = UiInteractionState::default();
 
     loop {
         events_loop.poll_events(|event| match event {
@@ -275,7 +340,10 @@ fn main() {
                 glutin::WindowEvent::Closed => running = false,
                 glutin::WindowEvent::Resized(w, h) => gl_window.resize(w, h),
                 glutin::WindowEvent::CursorMoved { position, .. } => {
-                    mouse = (position.0 as f32, position.1 as f32)
+                    mouse = vec2(position.0 as f32, position.1 as f32)
+                }
+                glutin::WindowEvent::MouseInput { state, .. } => {
+                    mouse_down = state == glutin::ElementState::Pressed;
                 }
                 _ => {}
             },
@@ -297,22 +365,38 @@ fn main() {
 
         let (width, height) = (width as f32, height as f32);
         context.frame((width, height), gl_window.hidpi_factor(), |frame| {
-            let mut ui_ctx = UiContext::new();
+            let mut ui_top_level = UiNode::new(Widget::Vertical);
+            let mut ui_ctx = UiContext::new(&mut ui_top_level, &interaction_state);
 
             emit_gui_items(&mut ui_ctx, &gui_ast);
-            do_ui_stuff(&mut ui_ctx);
 
             //dbg!(&ui_ctx);
+            do_ui_stuff(&mut ui_ctx);
 
-            let ui_layout = calculate_ui_layout(&ui_ctx);
+            let ui_layout = calculate_ui_layout(&ui_ctx.node);
 
             //dbg!(&ui_layout);
 
-            let flat_widgets = flatten_widgets(&ui_ctx);
+            let flat_widgets = flatten_widgets(&ui_ctx.node);
             let flat_layout = flatten_layout(vec2(0.0, 0.0), &ui_layout);
-            let flat_layout = flat_layout.iter().skip(1); // skip the root vertical layout node
 
-            for (widget, layout) in flat_widgets.iter().zip(flat_layout) {
+            interaction_state.hovered_widget = None;
+
+            for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                match widget {
+                    Widget::Button(s) => {
+                        let mouse_in_bounds = mouse.cmpge(layout.offset).all()
+                            && mouse.cmplt(layout.offset + layout.extent).all();
+
+                        if mouse_in_bounds {
+                            interaction_state.hovered_widget = Some(widget_uid.to_owned());
+                        }
+                    }
+                    _ => (),
+                }
+            }
+
+            for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
                 match widget {
                     Widget::Label(s) => draw_label(
                         &frame,
@@ -323,16 +407,26 @@ fn main() {
                         layout.extent.x(),
                         20.0,
                     ),
-                    Widget::Button(s) => draw_button(
-                        &frame,
-                        &fonts,
-                        s,
-                        layout.offset.x(),
-                        layout.offset.y(),
-                        layout.extent.x(),
-                        28.0,
-                        Color::from_rgba(0, 96, 128, 255),
-                    ),
+                    Widget::Button(s) => {
+                        let color = if mouse.cmpge(layout.offset).all()
+                            && mouse.cmplt(layout.offset + layout.extent).all()
+                        {
+                            Color::from_rgba(32, 128, 160, 255)
+                        } else {
+                            Color::from_rgba(0, 96, 128, 255)
+                        };
+
+                        draw_button(
+                            &frame,
+                            &fonts,
+                            s,
+                            layout.offset.x(),
+                            layout.offset.y(),
+                            layout.extent.x(),
+                            28.0,
+                            color,
+                        )
+                    }
                     _ => (),
                 }
             }

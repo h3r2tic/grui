@@ -1,5 +1,5 @@
 vertical {
-    button "I'm from a config file";
+    #special_button button "I'm from a config file";
 
     horizontal {
         label "hello";

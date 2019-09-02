@@ -1,5 +1,6 @@
 #[derive(Debug, Clone)]
 pub struct Item {
+    pub uid: Option<String>,
     pub ident: String,
     pub value: Value,
 }
