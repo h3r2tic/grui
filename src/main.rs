@@ -71,11 +71,10 @@ impl UiContext {
 
 #[allow(dead_code)]
 fn do_ui_stuff(ui: &mut UiContext) {
-    ui.append(Widget::Button("Why helo thar".to_owned()));
+    ui.append(Widget::Button("I'm from code".to_owned()));
 
-    if ui.id("herpderp").clicked() {
-        ui.id("herpderp")
-            .append(Widget::Button("Inline button lulz".to_owned()));
+    if ui.id("myspecialbutton").clicked() {
+        // do stuff
     }
 }
 
@@ -299,7 +298,9 @@ fn main() {
         let (width, height) = (width as f32, height as f32);
         context.frame((width, height), gl_window.hidpi_factor(), |frame| {
             let mut ui_ctx = UiContext::new();
+
             emit_gui_items(&mut ui_ctx, &gui_ast);
+            do_ui_stuff(&mut ui_ctx);
 
             //dbg!(&ui_ctx);
 
