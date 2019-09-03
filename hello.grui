@@ -1,8 +1,17 @@
 vertical {
-    #special_button button "I'm from a config file";
+    button "I'm from a config file";
 
     horizontal {
-        label "hello";
+        label "";
+    }
+
+    horizontal {
+        button "Plain button";
+        #special_button button "Special button";
+    }
+
+    horizontal {
+        label "y helo thar";
         label "hello again";
     }
 }

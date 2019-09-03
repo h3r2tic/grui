@@ -19,12 +19,13 @@ use nanovg::{
     Transform, Winding,
 };
 use std::collections::HashMap;
+use std::error::Error;
 use std::f32::consts::PI;
 use std::time::Instant;
 
 use glam::{vec2, Vec2};
 
-const INIT_WINDOW_SIZE: (u32, u32) = (300, 300);
+const INIT_WINDOW_SIZE: (u32, u32) = (500, 300);
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 struct WidgetId(usize);
@@ -54,9 +55,26 @@ impl From<Widget> for UiNode {
     }
 }
 
-struct UiContext<'a, 'b> {
+struct UiContext<'a> {
+    uid: WidgetUid,
+    interaction_state: &'a UiInteractionState,
+}
+
+impl<'a> UiContext<'a> {
+    fn nested(&self, id: WidgetId) -> Self {
+        let mut uid = self.uid.clone();
+        uid.0.push(id);
+
+        Self {
+            uid,
+            interaction_state: self.interaction_state,
+        }
+    }
+}
+
+struct Ui<'a, 'b> {
     node: &'a mut UiNode,
-    interaction_state: &'b UiInteractionState,
+    context: UiContext<'b>,
 }
 
 impl UiNode {
@@ -69,15 +87,22 @@ impl UiNode {
         }
     }
 
-    fn id<'a>(&'a mut self, label: &str) -> Option<&'a mut UiNode> {
+    fn id<'a>(
+        &'a mut self,
+        label: &str,
+        uid_prefix: &WidgetUid,
+    ) -> Option<(WidgetUid, &'a mut UiNode)> {
         if let Some(ref s) = self.string_uid {
             if s == label {
-                return Some(self);
+                return Some((uid_prefix.clone(), self));
             }
         }
 
-        for (_, ch) in self.children.iter_mut() {
-            if let Some(res) = ch.id(label) {
+        for (id, ch) in self.children.iter_mut() {
+            let mut uid_prefix = uid_prefix.clone();
+            uid_prefix.0.push(id.clone());
+
+            if let Some(res) = ch.id(label, &uid_prefix) {
                 return Some(res);
             }
         }
@@ -85,63 +110,99 @@ impl UiNode {
     }
 }
 
-impl<'a, 'b> UiContext<'a, 'b> {
-    fn new(node: &'a mut UiNode, interaction_state: &'b UiInteractionState) -> Self {
-        Self {
-            node,
-            interaction_state,
-        }
+impl<'a, 'b> Ui<'a, 'b> {
+    fn new(node: &'a mut UiNode, context: UiContext<'b>) -> Self {
+        Self { node, context }
     }
 
     fn clicked(&self) -> bool {
-        // TODO
-        false
+        self.context.interaction_state.mouse_released
+            && Some(&self.context.uid) == self.context.interaction_state.hover_widget.as_ref()
+            && Some(&self.context.uid) == self.context.interaction_state.drag_begin_widget.as_ref()
     }
 
-    fn id(&mut self, label: &str) -> Option<UiContext<'_, '_>> {
-        let interaction_state = self.interaction_state;
-        self.node
-            .id(label)
-            .map(|n| UiContext::new(n, interaction_state))
+    fn id(&mut self, label: &str) -> Option<Ui<'_, '_>> {
+        let interaction_state = self.context.interaction_state;
+
+        self.node.id(label, &self.context.uid).map(|(uid, n)| {
+            Ui::new(
+                n,
+                UiContext {
+                    interaction_state,
+                    uid,
+                },
+            )
+        })
     }
 
-    fn append(&mut self, child: impl Into<UiNode>) {
+    fn append(&mut self, child: impl Into<UiNode>) -> Ui<'_, '_> {
         let id = self.node.next_child_id;
         self.node.next_child_id.0 += 1;
-        self.node.children.push((id, child.into()))
+        self.node.children.push((id, child.into()));
+
+        let len = self.node.children.len();
+        let last = &mut self.node.children[len - 1];
+
+        Ui {
+            node: &mut last.1,
+            context: self.context.nested(last.0),
+        }
+    }
+
+    // syntax sugar
+    fn button(&mut self, label: &str) -> bool {
+        self.append(Widget::Button(label.to_owned())).clicked()
     }
 }
 
 #[allow(dead_code)]
-fn do_ui_stuff(ui: &mut UiContext) -> Option<()> {
-    ui.append(Widget::Button("I'm from code".to_owned()));
+fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
+    if ui.button("I'm from code") {
+        println!("code button clicked!");
+    }
 
     if ui.id("special_button")?.clicked() {
-        // do stuff
+        println!("special button clicked!");
     }
 
     Some(())
 }
 
-fn do_parse_ui_stuff() -> Vec<ast::Item> {
-    let mut f = File::open("hello.grui").expect("file not found");
+#[derive(Debug)]
+struct ConfigParseError {
+    more: String,
+}
+
+impl std::fmt::Display for ConfigParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Config parse error: {}", self.more)
+    }
+}
+
+impl Error for ConfigParseError {}
+
+fn do_parse_ui_stuff() -> Result<Vec<ast::Item>, Box<dyn Error>> {
+    let mut f = File::open("hello.grui")?;
 
     let mut contents = String::new();
-    f.read_to_string(&mut contents)
-        .expect("something went wrong reading the file");
+    f.read_to_string(&mut contents)?;
 
     // Remove comments
     let ws_re = Regex::new(r"//[^\n]*").unwrap();
     let contents = ws_re.replace_all(&contents, "");
 
-    let ast = grammar::MainParser::new().parse(&contents).unwrap();
-
-    //dbg!(&ast);
-
-    ast
+    match grammar::MainParser::new().parse(&contents) {
+        //dbg!(&ast);
+        Ok(ast) => Ok(ast),
+        Err(e) => Err(Box::new(ConfigParseError {
+            more: format!("{}", e),
+        })),
+    }
 }
 
-fn emit_gui_item(ui: &mut UiContext, item: &ast::Item) {
+fn emit_gui_item(ui: &mut Ui, item: &ast::Item) {
+    let item_id = ui.node.next_child_id;
+
     let ctx = match item.ident.as_str() {
         "label" => {
             if let ast::Value::String(ref value) = item.value {
@@ -154,7 +215,7 @@ fn emit_gui_item(ui: &mut UiContext, item: &ast::Item) {
             if let ast::Value::List(ref items) = item.value {
                 let mut sub_ctx = UiNode::new(Widget::Horizontal);
                 emit_gui_items(
-                    &mut UiContext::new(&mut sub_ctx, ui.interaction_state),
+                    &mut Ui::new(&mut sub_ctx, ui.context.nested(item_id)),
                     items,
                 );
                 Some(sub_ctx)
@@ -166,7 +227,7 @@ fn emit_gui_item(ui: &mut UiContext, item: &ast::Item) {
             if let ast::Value::List(ref items) = item.value {
                 let mut sub_ctx = UiNode::new(Widget::Vertical);
                 emit_gui_items(
-                    &mut UiContext::new(&mut sub_ctx, ui.interaction_state),
+                    &mut Ui::new(&mut sub_ctx, ui.context.nested(item_id)),
                     items,
                 );
                 Some(sub_ctx)
@@ -192,7 +253,7 @@ fn emit_gui_item(ui: &mut UiContext, item: &ast::Item) {
     }
 }
 
-fn emit_gui_items(ui: &mut UiContext, ast: &[ast::Item]) {
+fn emit_gui_items(ui: &mut Ui, ast: &[ast::Item]) {
     for item in ast {
         emit_gui_item(ui, item);
     }
@@ -295,14 +356,16 @@ fn flatten_layout<'a>(base_offset: Vec2, node: &'a LayoutTree) -> Vec<FlattenedL
     result
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct UiInteractionState {
-    hovered_widget: Option<WidgetUid>,
+    hover_widget: Option<WidgetUid>,
+    drag_begin_widget: Option<WidgetUid>,
+    mouse_down: bool,
+    mouse_released: bool,
+    mouse_pressed: bool,
 }
 
 fn main() {
-    let gui_ast = do_parse_ui_stuff();
-
     let mut events_loop = glutin::EventsLoop::new();
     let window = glutin::WindowBuilder::new()
         .with_title("gui proto")
@@ -330,11 +393,12 @@ fn main() {
 
     let mut running = true;
     let mut mouse = vec2(0.0f32, 0.0f32);
-    let mut mouse_down = false;
 
     let mut interaction_state = UiInteractionState::default();
 
     loop {
+        let prev_mouse_down = interaction_state.mouse_down;
+
         events_loop.poll_events(|event| match event {
             glutin::Event::WindowEvent { event, .. } => match event {
                 glutin::WindowEvent::Closed => running = false,
@@ -343,7 +407,7 @@ fn main() {
                     mouse = vec2(position.0 as f32, position.1 as f32)
                 }
                 glutin::WindowEvent::MouseInput { state, .. } => {
-                    mouse_down = state == glutin::ElementState::Pressed;
+                    interaction_state.mouse_down = state == glutin::ElementState::Pressed;
                 }
                 _ => {}
             },
@@ -366,68 +430,96 @@ fn main() {
         let (width, height) = (width as f32, height as f32);
         context.frame((width, height), gl_window.hidpi_factor(), |frame| {
             let mut ui_top_level = UiNode::new(Widget::Vertical);
-            let mut ui_ctx = UiContext::new(&mut ui_top_level, &interaction_state);
+            let mut ui_ctx = Ui::new(
+                &mut ui_top_level,
+                UiContext {
+                    uid: WidgetUid(Vec::new()),
+                    interaction_state: &interaction_state,
+                },
+            );
 
-            emit_gui_items(&mut ui_ctx, &gui_ast);
+            //dbg!(&interaction_state);
 
-            //dbg!(&ui_ctx);
-            do_ui_stuff(&mut ui_ctx);
+            let gui_ast = do_parse_ui_stuff();
 
-            let ui_layout = calculate_ui_layout(&ui_ctx.node);
-
-            //dbg!(&ui_layout);
-
-            let flat_widgets = flatten_widgets(&ui_ctx.node);
-            let flat_layout = flatten_layout(vec2(0.0, 0.0), &ui_layout);
-
-            interaction_state.hovered_widget = None;
-
-            for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
-                match widget {
-                    Widget::Button(s) => {
-                        let mouse_in_bounds = mouse.cmpge(layout.offset).all()
-                            && mouse.cmplt(layout.offset + layout.extent).all();
-
-                        if mouse_in_bounds {
-                            interaction_state.hovered_widget = Some(widget_uid.to_owned());
-                        }
-                    }
-                    _ => (),
-                }
+            if let Err(ref err) = gui_ast {
+                println!("{}", err);
             }
 
-            for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
-                match widget {
-                    Widget::Label(s) => draw_label(
-                        &frame,
-                        &fonts,
-                        s,
-                        layout.offset.x(),
-                        layout.offset.y(),
-                        layout.extent.x(),
-                        20.0,
-                    ),
-                    Widget::Button(s) => {
-                        let color = if mouse.cmpge(layout.offset).all()
-                            && mouse.cmplt(layout.offset + layout.extent).all()
-                        {
-                            Color::from_rgba(32, 128, 160, 255)
-                        } else {
-                            Color::from_rgba(0, 96, 128, 255)
-                        };
+            // TODO: cache
+            if let Ok(gui_ast) = do_parse_ui_stuff() {
+                emit_gui_items(&mut ui_ctx, &gui_ast);
 
-                        draw_button(
+                //dbg!(&ui_ctx);
+                do_ui_stuff(&mut ui_ctx);
+
+                let ui_layout = calculate_ui_layout(&ui_ctx.node);
+
+                //dbg!(&ui_layout);
+
+                let flat_widgets = flatten_widgets(&ui_ctx.node);
+                let flat_layout = flatten_layout(vec2(0.0, 0.0), &ui_layout);
+
+                interaction_state.hover_widget = None;
+                interaction_state.mouse_released = !interaction_state.mouse_down && prev_mouse_down;
+                interaction_state.mouse_pressed = interaction_state.mouse_down && !prev_mouse_down;
+
+                if !interaction_state.mouse_down && !prev_mouse_down {
+                    interaction_state.drag_begin_widget = None;
+                }
+
+                for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                    match widget {
+                        Widget::Button(s) => {
+                            let mouse_in_bounds = mouse.cmpge(layout.offset).all()
+                                && mouse.cmplt(layout.offset + layout.extent).all();
+
+                            if mouse_in_bounds {
+                                interaction_state.hover_widget = Some(widget_uid.to_owned());
+
+                                if interaction_state.mouse_pressed {
+                                    interaction_state.drag_begin_widget =
+                                        Some(widget_uid.to_owned());
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+
+                for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                    match widget {
+                        Widget::Label(s) => draw_label(
                             &frame,
                             &fonts,
                             s,
                             layout.offset.x(),
                             layout.offset.y(),
                             layout.extent.x(),
-                            28.0,
-                            color,
-                        )
+                            20.0,
+                        ),
+                        Widget::Button(s) => {
+                            let color = if mouse.cmpge(layout.offset).all()
+                                && mouse.cmplt(layout.offset + layout.extent).all()
+                            {
+                                Color::from_rgba(32, 128, 160, 255)
+                            } else {
+                                Color::from_rgba(0, 96, 128, 255)
+                            };
+
+                            draw_button(
+                                &frame,
+                                &fonts,
+                                s,
+                                layout.offset.x(),
+                                layout.offset.y(),
+                                layout.extent.x(),
+                                28.0,
+                                color,
+                            )
+                        }
+                        _ => (),
                     }
-                    _ => (),
                 }
             }
         });
