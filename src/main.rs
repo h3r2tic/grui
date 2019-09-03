@@ -150,14 +150,14 @@ impl<'a, 'b> Ui<'a, 'b> {
     }
 
     // syntax sugar
-    fn button(&mut self, label: &str) -> bool {
-        self.append(Widget::Button(label.to_owned())).clicked()
+    fn button(&mut self, label: &str) -> Ui<'_, '_> {
+        self.append(Widget::Button(label.to_owned()))
     }
 }
 
 #[allow(dead_code)]
 fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
-    if ui.button("I'm from code") {
+    if ui.button("I'm from code").clicked() {
         println!("code button clicked!");
     }
 
