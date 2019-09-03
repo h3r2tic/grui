@@ -14,4 +14,6 @@ vertical {
         label "y helo thar";
         label "hello again";
     }
+    
+    #append_box horizontal {}
 }

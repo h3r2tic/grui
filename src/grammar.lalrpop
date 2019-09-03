@@ -9,7 +9,7 @@ pub Main: Vec<Item> = {
 
 pub ItemDecl: Item = {
     <uid:Uid?> <ident:Ident> <value:Value> ";" => Item { uid, ident, value: value },
-	<uid:Uid?> <ident:Ident> "{" <value:Main> "}" => Item { uid, ident, value: Value::List(value) },
+	<uid:Uid?> <ident:Ident> "{" <value:Main?> "}" => Item { uid, ident, value: Value::List(value.unwrap_or_default()) },
 }
 
 Value: Value = {

@@ -153,6 +153,11 @@ impl<'a, 'b> Ui<'a, 'b> {
     fn button(&mut self, label: &str) -> Ui<'_, '_> {
         self.append(Widget::Button(label.to_owned()))
     }
+
+    // syntax sugar
+    fn label(&mut self, label: &str) -> Ui<'_, '_> {
+        self.append(Widget::Label(label.to_owned()))
+    }
 }
 
 #[allow(dead_code)]
@@ -164,6 +169,11 @@ fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
     if ui.id("special_button")?.clicked() {
         println!("special button clicked!");
     }
+
+    let mut append_box = ui.id("append_box")?;
+    append_box.label("label 1");
+    append_box.label("label 2");
+    append_box.label("label 3");
 
     Some(())
 }
