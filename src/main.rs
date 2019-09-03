@@ -175,6 +175,8 @@ fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
     append_box.label("label 2");
     append_box.label("label 3");
 
+    ui.label(format!("Hover: {:?}", ui.context.interaction_state.hover_widget).as_str());
+
     Some(())
 }
 
