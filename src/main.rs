@@ -67,6 +67,18 @@ struct Ui<'a, 'b> {
     context: UiContext<'b>,
 }
 
+#[derive(Debug)]
+struct WidgetNotFoundError;
+
+impl Error for WidgetNotFoundError {}
+impl std::fmt::Display for WidgetNotFoundError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Could not find widget")
+    }
+}
+
+type UiResult<T> = Result<T, Box<dyn Error>>;
+
 impl UiNode {
     fn new(widget: Widget) -> Self {
         Self {
@@ -81,10 +93,10 @@ impl UiNode {
         &'a mut self,
         label: &str,
         uid_prefix: &WidgetUid,
-    ) -> Option<(WidgetUid, &'a mut UiNode)> {
+    ) -> UiResult<(WidgetUid, &'a mut UiNode)> {
         if let Some(ref s) = self.string_uid {
             if s == label {
-                return Some((uid_prefix.clone(), self));
+                return Ok((uid_prefix.clone(), self));
             }
         }
 
@@ -92,11 +104,12 @@ impl UiNode {
             let mut uid_prefix = uid_prefix.clone();
             uid_prefix.0.push(id.clone());
 
-            if let Some(res) = ch.id(label, &uid_prefix) {
-                return Some(res);
+            if let Ok(res) = ch.id(label, &uid_prefix) {
+                return Ok(res);
             }
         }
-        None
+
+        Err(Box::new(WidgetNotFoundError))
     }
 }
 
@@ -111,7 +124,7 @@ impl<'a, 'b> Ui<'a, 'b> {
             && Some(&self.context.uid) == self.context.interaction_state.drag_begin_widget.as_ref()
     }
 
-    fn id(&mut self, label: &str) -> Option<Ui<'_, '_>> {
+    fn id(&mut self, label: &str) -> UiResult<Ui<'_, '_>> {
         let interaction_state = self.context.interaction_state;
 
         self.node.id(label, &self.context.uid).map(|(uid, n)| {
@@ -163,7 +176,7 @@ impl std::fmt::Display for ConfigParseError {
 
 impl Error for ConfigParseError {}
 
-fn do_parse_ui_stuff() -> Result<Vec<ast::Item>, Box<dyn Error>> {
+fn do_parse_ui_stuff() -> UiResult<Vec<ast::Item>> {
     let mut f = File::open("hello.grui")?;
 
     let mut contents = String::new();
@@ -433,7 +446,7 @@ fn main() {
                 emit_gui_items(&mut ui_ctx, &gui_ast);
 
                 //dbg!(&ui_ctx);
-                do_ui_stuff(&mut ui_ctx);
+                let _ = do_ui_stuff(&mut ui_ctx);
 
                 let ui_layout = calculate_ui_layout(&ui_ctx.node);
 
@@ -617,7 +630,7 @@ fn draw_button(
 
 // ----
 
-fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
+fn do_ui_stuff(ui: &mut Ui) -> UiResult<()> {
     if ui.button("I'm from code").clicked() {
         println!("code button clicked!");
     }
@@ -633,5 +646,5 @@ fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
 
     ui.label(format!("Hover: {:?}", ui.context.interaction_state.hover_widget).as_str());
 
-    Some(())
+    Ok(())
 }
