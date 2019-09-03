@@ -1,7 +1,3 @@
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-#![allow(dead_code)]
-
 #[macro_use]
 extern crate lalrpop_util;
 lalrpop_mod!(pub grammar); // synthesized by LALRPOP
@@ -13,15 +9,9 @@ use std::fs::File;
 use std::io::prelude::*;
 
 use glutin::GlContext;
-use nanovg::{
-    Alignment, Clip, Color, Context, Direction, Font, Frame, Gradient, Image, ImagePattern,
-    Intersect, LineCap, LineJoin, PathOptions, Scissor, Solidity, StrokeOptions, TextOptions,
-    Transform, Winding,
-};
-use std::collections::HashMap;
+use nanovg::{Alignment, Color, Font, Frame, Gradient, TextOptions};
+
 use std::error::Error;
-use std::f32::consts::PI;
-use std::time::Instant;
 
 use glam::{vec2, Vec2};
 
@@ -160,26 +150,6 @@ impl<'a, 'b> Ui<'a, 'b> {
     }
 }
 
-#[allow(dead_code)]
-fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
-    if ui.button("I'm from code").clicked() {
-        println!("code button clicked!");
-    }
-
-    if ui.id("special_button")?.clicked() {
-        println!("special button clicked!");
-    }
-
-    let mut append_box = ui.id("append_box")?;
-    append_box.label("label 1");
-    append_box.label("label 2");
-    append_box.label("label 3");
-
-    ui.label(format!("Hover: {:?}", ui.context.interaction_state.hover_widget).as_str());
-
-    Some(())
-}
-
 #[derive(Debug)]
 struct ConfigParseError {
     more: String,
@@ -290,8 +260,8 @@ impl LayoutTree {
 
 fn calculate_ui_layout(ctx: &UiNode) -> LayoutTree {
     match &ctx.widget {
-        Widget::Button(s) => LayoutTree::rect(180.0, 25.0),
-        Widget::Label(s) => LayoutTree::rect(180.0, 25.0),
+        Widget::Button(_s) => LayoutTree::rect(180.0, 25.0),
+        Widget::Label(_s) => LayoutTree::rect(180.0, 25.0),
         Widget::Horizontal => {
             let mut node = LayoutTree::rect(0.0, 0.0);
             let mut x = 0f32;
@@ -482,7 +452,7 @@ fn main() {
 
                 for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
                     match widget {
-                        Widget::Button(s) => {
+                        Widget::Button(_s) => {
                             let mouse_in_bounds = mouse.cmpge(layout.offset).all()
                                 && mouse.cmplt(layout.offset + layout.extent).all();
 
@@ -499,7 +469,7 @@ fn main() {
                     }
                 }
 
-                for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                for ((_widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
                     match widget {
                         Widget::Label(s) => draw_label(
                             &frame,
@@ -643,4 +613,25 @@ fn draw_button(
         text,
         options,
     );
+}
+
+// ----
+
+fn do_ui_stuff(ui: &mut Ui) -> Option<()> {
+    if ui.button("I'm from code").clicked() {
+        println!("code button clicked!");
+    }
+
+    if ui.id("special_button")?.clicked() {
+        println!("special button clicked!");
+    }
+
+    let mut append_box = ui.id("append_box")?;
+    append_box.label("label 1");
+    append_box.label("label 2");
+    append_box.label("label 3");
+
+    ui.label(format!("Hover: {:?}", ui.context.interaction_state.hover_widget).as_str());
+
+    Some(())
 }
