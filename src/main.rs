@@ -138,7 +138,10 @@ impl<'a, 'b> Ui<'a, 'b> {
         })
     }
 
-    fn append(&mut self, child: impl Into<UiNode>) -> Ui<'_, '_> {
+    fn append<'s, 'r>(&'s mut self, child: impl Into<UiNode>) -> Ui<'r, 'b>
+    where
+        's: 'r,
+    {
         let id = self.node.next_child_id;
         self.node.next_child_id.0 += 1;
         self.node.children.push((id, child.into()));
@@ -162,6 +165,24 @@ impl<'a, 'b> Ui<'a, 'b> {
         self.append(Widget::Label(label.to_owned()))
     }
 }
+
+/*
+// syntax sugar
+fn button<'b, 's, 'r>(ui: &'s mut Ui<'_, 'b>, label: &str) -> Ui<'r, 'b>
+where
+    's: 'r,
+{
+    ui.append(Widget::Button(label.to_owned()))
+}
+
+// syntax sugar
+fn label<'b, 's, 'r>(ui: &'s mut Ui<'_, 'b>, label: &str) -> Ui<'r, 'b>
+where
+    's: 'r,
+{
+    ui.append(Widget::Label(label.to_owned()))
+}
+*/
 
 #[derive(Debug)]
 struct ConfigParseError {
@@ -464,11 +485,11 @@ fn main() {
                 }
 
                 for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                    let mouse_in_bounds = mouse.cmpge(layout.offset).all()
+                        && mouse.cmplt(layout.offset + layout.extent).all();
+
                     match widget {
                         Widget::Button(_s) => {
-                            let mouse_in_bounds = mouse.cmpge(layout.offset).all()
-                                && mouse.cmplt(layout.offset + layout.extent).all();
-
                             if mouse_in_bounds {
                                 interaction_state.hover_widget = Some(widget_uid.to_owned());
 
