@@ -482,7 +482,7 @@ fn main() {
                     }
                 }
 
-                for ((_widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
                     match widget {
                         Widget::Label(s) => draw_label(
                             &frame,
@@ -494,13 +494,12 @@ fn main() {
                             20.0,
                         ),
                         Widget::Button(s) => {
-                            let color = if mouse.cmpge(layout.offset).all()
-                                && mouse.cmplt(layout.offset + layout.extent).all()
-                            {
-                                Color::from_rgba(32, 128, 160, 255)
-                            } else {
-                                Color::from_rgba(0, 96, 128, 255)
-                            };
+                            let color =
+                                if interaction_state.hover_widget.as_ref() == Some(widget_uid) {
+                                    Color::from_rgba(16, 112, 144, 255)
+                                } else {
+                                    Color::from_rgba(0, 96, 128, 255)
+                                };
 
                             draw_button(
                                 &frame,
@@ -511,6 +510,7 @@ fn main() {
                                 layout.extent.x(),
                                 28.0,
                                 color,
+                                interaction_state.drag_begin_widget.as_ref() == Some(widget_uid),
                             )
                         }
                         _ => (),
@@ -554,6 +554,7 @@ fn draw_button(
     w: f32,
     h: f32,
     color: Color,
+    pressed: bool,
 ) {
     let corner_radius = 4.0;
     let color_is_black = is_black(color);
@@ -566,17 +567,15 @@ fn draw_button(
                 path.fill(color, Default::default());
             }
 
+            let c0 = Color::from_rgba(255, 255, 255, if color_is_black { 16 } else { 32 });
+            let c1 = Color::from_rgba(0, 0, 0, if color_is_black { 16 } else { 32 });
+
             path.fill(
                 Gradient::Linear {
                     start: (x, y),
                     end: (x, y + h),
-                    start_color: Color::from_rgba(
-                        255,
-                        255,
-                        255,
-                        if color_is_black { 16 } else { 32 },
-                    ),
-                    end_color: Color::from_rgba(0, 0, 0, if color_is_black { 16 } else { 32 }),
+                    start_color: if !pressed { c0 } else { c1 },
+                    end_color: if !pressed { c1 } else { c0 },
                 },
                 Default::default(),
             );
