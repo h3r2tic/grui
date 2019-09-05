@@ -5,6 +5,7 @@ lalrpop_mod!(pub grammar); // synthesized by LALRPOP
 mod ast;
 
 use regex::Regex;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
 
@@ -24,7 +25,75 @@ struct WidgetId(usize);
 struct WidgetUid(Vec<WidgetId>);
 
 #[derive(Debug)]
+enum WidgetEvent {
+    BeginHover,
+    EndHover,
+    BeginActive,
+    EndActive,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventPropagation {
+    Continue,
+    Stop,
+}
+
+trait WidgetBehavior {
+    fn handle_event(
+        &mut self,
+        event: &WidgetEvent,
+        api: &mut dyn WidgetBehaviorApi,
+    ) -> EventPropagation;
+}
+
+trait WidgetBehaviorApi {
+    fn post_response(&mut self, r: WidgetResponse);
+}
+
+struct GenericWidget {
+    draw_style: &'static str,
+    behaviors: Vec<Box<dyn WidgetBehavior>>,
+}
+
+#[derive(Default)]
+struct ClickableBehavior {
+    hover: bool,
+    active: bool,
+}
+
+impl WidgetBehavior for ClickableBehavior {
+    fn handle_event(
+        &mut self,
+        event: &WidgetEvent,
+        api: &mut dyn WidgetBehaviorApi,
+    ) -> EventPropagation {
+        match event {
+            WidgetEvent::BeginHover => self.hover = true,
+            WidgetEvent::EndHover => self.hover = false,
+            WidgetEvent::BeginActive => self.active = true,
+            WidgetEvent::EndActive => {
+                /*if self.hover*/
+                {
+                    api.post_response(WidgetResponse::Activated);
+                }
+
+                self.active = false;
+            }
+        }
+
+        EventPropagation::Continue
+    }
+}
+
+impl std::fmt::Debug for GenericWidget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GenericWidget")
+    }
+}
+
+#[derive(Debug)]
 enum Widget {
+    Generic(GenericWidget),
     Button(String),
     Label(String),
     Horizontal,
@@ -119,9 +188,15 @@ impl<'a, 'b> Ui<'a, 'b> {
     }
 
     fn clicked(&self) -> bool {
-        self.context.interaction_state.mouse_released
-            && Some(&self.context.uid) == self.context.interaction_state.hover_widget.as_ref()
-            && Some(&self.context.uid) == self.context.interaction_state.drag_begin_widget.as_ref()
+        /*self.context.interaction_state.mouse_released
+        && Some(&self.context.uid) == self.context.interaction_state.hover_widget.as_ref()
+        && Some(&self.context.uid) == self.context.interaction_state.drag_begin_widget.as_ref()*/
+        self.context
+            .interaction_state
+            .widget_responses
+            .get(&self.context.uid)
+            .map(|responses| responses.iter().any(|r| *r == WidgetResponse::Activated))
+            .unwrap_or_default()
     }
 
     fn id(&mut self, label: &str) -> UiResult<Ui<'_, '_>> {
@@ -157,7 +232,12 @@ impl<'a, 'b> Ui<'a, 'b> {
 
     // syntax sugar
     fn button(&mut self, label: &str) -> Ui<'_, '_> {
-        self.append(Widget::Button(label.to_owned()))
+        let mut res = self.append(Widget::Generic(GenericWidget {
+            draw_style: "button",
+            behaviors: vec![Box::new(ClickableBehavior::default())],
+        }));
+        res.label(label);
+        res
     }
 
     // syntax sugar
@@ -310,7 +390,7 @@ fn calculate_ui_layout(ctx: &UiNode) -> LayoutTree {
             }
             node
         }
-        Widget::Vertical => {
+        Widget::Vertical | Widget::Generic(_) => {
             let mut node = LayoutTree::rect(0.0, 0.0);
             let mut x = 0f32;
             let mut y = 0f32;
@@ -327,27 +407,70 @@ fn calculate_ui_layout(ctx: &UiNode) -> LayoutTree {
     }
 }
 
-fn flatten_widgets_inner<'a>(ui: &'a UiNode, uid: &WidgetUid) -> Vec<(WidgetUid, &'a Widget)> {
+struct FlattenedWidgetNode<'a> {
+    uid: WidgetUid,
+    widget: &'a mut Widget,
+    children_count: usize,
+    subtree_size: usize,
+}
+
+fn flatten_widgets_inner<'a>(ui: &'a mut UiNode, uid: &WidgetUid) -> Vec<FlattenedWidgetNode<'a>> {
     let mut result = Vec::new();
 
-    result.push((uid.clone(), &ui.widget));
+    result.push(FlattenedWidgetNode {
+        uid: uid.clone(),
+        widget: &mut ui.widget,
+        children_count: ui.children.len(),
+        subtree_size: 0,
+    });
 
-    match &ui.widget {
-        Widget::Horizontal | Widget::Vertical => {
-            for item in &ui.children {
-                let mut uid = uid.clone();
-                uid.0.push(item.0);
+    let l0 = result.len();
 
-                result.append(&mut flatten_widgets_inner(&item.1, &uid));
-            }
-        }
-        _ => (),
+    for item in ui.children.iter_mut() {
+        let mut uid = uid.clone();
+        uid.0.push(item.0);
+
+        result.append(&mut flatten_widgets_inner(&mut item.1, &uid));
     }
+
+    let l1 = result.len();
+    result[l0 - 1].subtree_size = l1 - l0;
+
     result
 }
 
-fn flatten_widgets<'a>(ui: &'a UiNode) -> Vec<(WidgetUid, &'a Widget)> {
+fn flatten_widgets<'a>(ui: &'a mut UiNode) -> Vec<FlattenedWidgetNode<'a>> {
     flatten_widgets_inner(ui, &WidgetUid(Vec::new()))
+}
+
+enum TreeTraversal {
+    Continue,
+    Stop,
+}
+
+fn traverse_flattened_widget_tree<'a, F>(
+    nodes: &[FlattenedWidgetNode<'a>],
+    parent_offset: usize,
+    f: &mut F,
+) where
+    F: FnMut(usize) -> TreeTraversal,
+{
+    match f(parent_offset) {
+        TreeTraversal::Stop => (),
+        TreeTraversal::Continue => {
+            let children_count = nodes[0].children_count;
+            let mut child_offset = 1;
+
+            for _ in 0..children_count {
+                traverse_flattened_widget_tree(
+                    &nodes[child_offset..],
+                    parent_offset + child_offset,
+                    f,
+                );
+                child_offset += 1 + nodes[child_offset].subtree_size;
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -372,6 +495,11 @@ fn flatten_layout<'a>(base_offset: Vec2, node: &'a LayoutTree) -> Vec<FlattenedL
     result
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum WidgetResponse {
+    Activated,
+}
+
 #[derive(Default, Debug)]
 struct UiInteractionState {
     hover_widget: Option<WidgetUid>,
@@ -379,6 +507,7 @@ struct UiInteractionState {
     mouse_down: bool,
     mouse_released: bool,
     mouse_pressed: bool,
+    widget_responses: HashMap<WidgetUid, Vec<WidgetResponse>>,
 }
 
 fn main() {
@@ -445,6 +574,10 @@ fn main() {
 
         let (width, height) = (width as f32, height as f32);
         context.frame((width, height), gl_window.hidpi_factor(), |frame| {
+            interaction_state.hover_widget = None;
+            interaction_state.mouse_released = !interaction_state.mouse_down && prev_mouse_down;
+            interaction_state.mouse_pressed = interaction_state.mouse_down && !prev_mouse_down;
+
             let mut ui_top_level = UiNode::new(Widget::Vertical);
             let mut ui_ctx = Ui::new(
                 &mut ui_top_level,
@@ -473,29 +606,87 @@ fn main() {
 
                 //dbg!(&ui_layout);
 
-                let flat_widgets = flatten_widgets(&ui_ctx.node);
+                let mut flat_widgets = flatten_widgets(&mut ui_ctx.node);
                 let flat_layout = flatten_layout(vec2(0.0, 0.0), &ui_layout);
 
-                interaction_state.hover_widget = None;
-                interaction_state.mouse_released = !interaction_state.mouse_down && prev_mouse_down;
-                interaction_state.mouse_pressed = interaction_state.mouse_down && !prev_mouse_down;
+                interaction_state.widget_responses.clear();
+
+                {
+                    let mut mouse_hover_widgets: Vec<usize> = vec![];
+                    traverse_flattened_widget_tree(&flat_widgets, 0, &mut |i| {
+                        let layout = &flat_layout[i];
+                        let mouse_in_bounds = mouse.cmpge(layout.offset).all()
+                            && mouse.cmplt(layout.offset + layout.extent).all();
+
+                        if mouse_in_bounds {
+                            mouse_hover_widgets.push(i);
+                            TreeTraversal::Continue
+                        } else {
+                            TreeTraversal::Stop
+                        }
+                    });
+
+                    let mut widget_events = vec![];
+
+                    if interaction_state.mouse_pressed {
+                        widget_events.push(WidgetEvent::BeginActive);
+                    }
+
+                    if interaction_state.mouse_released {
+                        widget_events.push(WidgetEvent::EndActive);
+                    }
+
+                    for event in widget_events {
+                        //let mut last_subtree_idx = 0;
+                        for (_subtree_idx, wi) in mouse_hover_widgets.iter().enumerate() {
+                            //last_subtree_idx = subtree_idx;
+                            let mut should_stop = false;
+
+                            impl WidgetBehaviorApi for Vec<WidgetResponse> {
+                                fn post_response(&mut self, r: WidgetResponse) {
+                                    self.push(r);
+                                }
+                            }
+
+                            let mut responses: Vec<WidgetResponse> = Vec::new();
+
+                            if let Widget::Generic(ref mut w) = flat_widgets[*wi].widget {
+                                for b in &mut w.behaviors {
+                                    should_stop |= EventPropagation::Stop
+                                        == b.handle_event(&event, &mut responses);
+                                }
+                            }
+
+                            //dbg!(&responses);
+
+                            interaction_state
+                                .widget_responses
+                                .insert(flat_widgets[*wi].uid.clone(), responses);
+
+                            if should_stop {
+                                break;
+                            }
+                        }
+                    }
+                }
 
                 if !interaction_state.mouse_down && !prev_mouse_down {
                     interaction_state.drag_begin_widget = None;
                 }
 
-                for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                for (FlattenedWidgetNode { uid, widget, .. }, layout) in
+                    flat_widgets.iter().zip(&flat_layout)
+                {
                     let mouse_in_bounds = mouse.cmpge(layout.offset).all()
                         && mouse.cmplt(layout.offset + layout.extent).all();
 
                     match widget {
                         Widget::Button(_s) => {
                             if mouse_in_bounds {
-                                interaction_state.hover_widget = Some(widget_uid.to_owned());
+                                interaction_state.hover_widget = Some(uid.to_owned());
 
                                 if interaction_state.mouse_pressed {
-                                    interaction_state.drag_begin_widget =
-                                        Some(widget_uid.to_owned());
+                                    interaction_state.drag_begin_widget = Some(uid.to_owned());
                                 }
                             }
                         }
@@ -503,7 +694,9 @@ fn main() {
                     }
                 }
 
-                for ((widget_uid, widget), layout) in flat_widgets.iter().zip(&flat_layout) {
+                for (FlattenedWidgetNode { uid, widget, .. }, layout) in
+                    flat_widgets.iter().zip(&flat_layout)
+                {
                     match widget {
                         Widget::Label(s) => draw_label(
                             &frame,
@@ -515,12 +708,11 @@ fn main() {
                             20.0,
                         ),
                         Widget::Button(s) => {
-                            let color =
-                                if interaction_state.hover_widget.as_ref() == Some(widget_uid) {
-                                    Color::from_rgba(16, 112, 144, 255)
-                                } else {
-                                    Color::from_rgba(0, 96, 128, 255)
-                                };
+                            let color = if interaction_state.hover_widget.as_ref() == Some(uid) {
+                                Color::from_rgba(16, 112, 144, 255)
+                            } else {
+                                Color::from_rgba(0, 96, 128, 255)
+                            };
 
                             draw_button(
                                 &frame,
@@ -531,8 +723,30 @@ fn main() {
                                 layout.extent.x(),
                                 28.0,
                                 color,
-                                interaction_state.drag_begin_widget.as_ref() == Some(widget_uid),
+                                interaction_state.drag_begin_widget.as_ref() == Some(uid),
                             )
+                        }
+                        Widget::Generic(GenericWidget { draw_style, .. }) => {
+                            if &"button" == draw_style {
+                                let color = if interaction_state.hover_widget.as_ref() == Some(uid)
+                                {
+                                    Color::from_rgba(16, 112, 144, 255)
+                                } else {
+                                    Color::from_rgba(0, 96, 128, 255)
+                                };
+
+                                draw_button(
+                                    &frame,
+                                    &fonts,
+                                    "",
+                                    layout.offset.x(),
+                                    layout.offset.y(),
+                                    layout.extent.x(),
+                                    28.0,
+                                    color,
+                                    false,
+                                );
+                            }
                         }
                         _ => (),
                     }
